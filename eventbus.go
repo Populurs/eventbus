@@ -10,7 +10,7 @@ import (
 // EventBus 接口定义
 type EventBus interface {
 	Publish(ctx context.Context, topic string, payload []byte, metadata map[string]string) error
-	Subscribe(ctx context.Context, topic string, handler func(*message.Message)) error
+	Subscribe(ctx context.Context, topic string, handler EventHandler) error
 }
 
 // RabbitMQEventBus 实现
@@ -18,6 +18,8 @@ type RabbitMQEventBus struct {
 	publisher  *amqp.Publisher
 	subscriber *amqp.Subscriber
 }
+
+type EventHandler func(payload []byte, metadata map[string]string) error
 
 // NewRabbitMQEventBus 初始化事件总线
 func NewRabbitMQEventBus(amqpUri string) (EventBus, error) {
@@ -63,7 +65,7 @@ func (e *RabbitMQEventBus) Publish(ctx context.Context, topic string, payload []
 }
 
 // Subscribe 订阅事件
-func (e *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler func(*message.Message)) error {
+func (e *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler EventHandler) error {
 	msgs, err := e.subscriber.Subscribe(ctx, topic)
 	if err != nil {
 		return err
@@ -71,7 +73,10 @@ func (e *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler 
 
 	go func() {
 		for msg := range msgs {
-			handler(msg)
+			err = handler(msg.Payload, msg.Metadata)
+			if err != nil {
+				msg.Nack()
+			}
 			msg.Ack()
 		}
 	}()
