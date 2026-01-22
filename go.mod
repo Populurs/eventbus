@@ -1,4 +1,4 @@
-module eventbus
+module github.com/Populurs/eventbus
 
 go 1.25.5
 
