@@ -19,7 +19,7 @@ type RabbitMQEventBus struct {
 	subscriber *amqp.Subscriber
 }
 
-type EventHandler func(payload []byte, metadata map[string]string) error
+type EventHandler func(eventID string, payload []byte, metadata map[string]string) error
 
 // NewRabbitMQEventBus 初始化事件总线
 func NewRabbitMQEventBus(amqpUri string) (EventBus, error) {
@@ -73,7 +73,7 @@ func (e *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler 
 
 	go func() {
 		for msg := range msgs {
-			err = handler(msg.Payload, msg.Metadata)
+			err = handler(msg.UUID, msg.Payload, msg.Metadata)
 			if err != nil {
 				msg.Nack()
 			}
