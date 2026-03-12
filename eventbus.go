@@ -2,6 +2,8 @@ package eventbus
 
 import (
 	"context"
+	"sync"
+
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill-amqp/v2/pkg/amqp"
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -15,16 +17,22 @@ type EventBus interface {
 
 // RabbitMQEventBus 实现
 type RabbitMQEventBus struct {
-	publisher  *amqp.Publisher
-	subscriber *amqp.Subscriber
+	publisher     *amqp.Publisher
+	subscriber    *amqp.Subscriber
+	prefetchCount int
 }
 
 type EventHandler func(eventID string, payload []byte, metadata map[string]string) error
 
 // NewRabbitMQEventBus 初始化事件总线
-func NewRabbitMQEventBus(amqpUri string) (EventBus, error) {
+// prefetchCount 控制 RabbitMQ QoS PrefetchCount 及并发消费数，<=0 时默认为 1
+func NewRabbitMQEventBus(amqpUri string, prefetchCount int) (EventBus, error) {
+	if prefetchCount <= 0 {
+		prefetchCount = 1
+	}
 
 	config := amqp.NewDurableQueueConfig(amqpUri)
+	config.Consume.Qos.PrefetchCount = prefetchCount
 	logger := watermill.NewStdLogger(false, true)
 
 	// 创建发布器
@@ -46,8 +54,9 @@ func NewRabbitMQEventBus(amqpUri string) (EventBus, error) {
 	}
 
 	return &RabbitMQEventBus{
-		publisher:  publisher,
-		subscriber: subscriber,
+		publisher:     publisher,
+		subscriber:    subscriber,
+		prefetchCount: prefetchCount,
 	}, nil
 }
 
@@ -64,7 +73,7 @@ func (e *RabbitMQEventBus) Publish(ctx context.Context, topic string, payload []
 	return e.publisher.Publish(topic, msg)
 }
 
-// Subscribe 订阅事件
+// Subscribe 订阅事件，并发消费，并发度与 PrefetchCount 一致
 func (e *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler EventHandler) error {
 	msgs, err := e.subscriber.Subscribe(ctx, topic)
 	if err != nil {
@@ -72,13 +81,21 @@ func (e *RabbitMQEventBus) Subscribe(ctx context.Context, topic string, handler 
 	}
 
 	go func() {
+		sem := make(chan struct{}, e.prefetchCount)
+		var wg sync.WaitGroup
 		for msg := range msgs {
-			err = handler(msg.UUID, msg.Payload, msg.Metadata)
-			if err != nil {
-				msg.Nack()
-			}
-			msg.Ack()
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(m *message.Message) {
+				defer func() { <-sem; wg.Done() }()
+				if err := handler(m.UUID, m.Payload, m.Metadata); err != nil {
+					m.Nack()
+				} else {
+					m.Ack()
+				}
+			}(msg)
 		}
+		wg.Wait()
 	}()
 
 	return nil
